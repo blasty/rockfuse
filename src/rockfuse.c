@@ -1,5 +1,6 @@
 #define FUSE_USE_VERSION 26
 #include <fuse.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -17,6 +18,8 @@
 #define LOADER2_SIZE (TRUST_START_SECTOR - LOADER2_START_SECTOR)
 #define TRUST_SIZE (BOOT_START_SECTOR - TRUST_START_SECTOR)
 #define BOOT_SIZE (ROOT_START_SECTOR - BOOT_START_SECTOR)
+
+static pthread_mutex_t usb_mutex;
 
 typedef struct {
     char *vpath;
@@ -97,6 +100,8 @@ static int rockfuse_open(const char *path, struct fuse_file_info *fi) {
     return 0;
 }
 
+#define MAX_SECTORS 128
+
 uint8_t workbuf[0x200];
 
 static int rockfuse_read(const char *path, char *buf, size_t size, off_t offset,
@@ -110,6 +115,8 @@ static int rockfuse_read(const char *path, char *buf, size_t size, off_t offset,
     }
 
     maxlen = vfile->sector_count * 0x200;
+
+    pthread_mutex_lock(&usb_mutex);
 
     if (offset < maxlen) {
         if (offset + size > maxlen)
@@ -137,18 +144,18 @@ static int rockfuse_read(const char *path, char *buf, size_t size, off_t offset,
         }
 
         // read main body (sector-multiples)
-        if (size_left >= 0x200) {
+        while (size_left >= 0x200) {
+            uint32_t sectors = ((size_left >> 9) > MAX_SECTORS) ? MAX_SECTORS : (size_left >> 9);
+
             if (rockusb_read_lba(
                 vfile->sector_start + ((offset + buf_pos) >> 9),
-                size_left >> 9, (uint8_t*)buf + buf_pos
+                sectors, (uint8_t*)buf + buf_pos
             ) != 0) {
                 return 0;
             }
 
-            uint32_t mainsize = (size_left >> 9) << 9;
-
-            buf_pos += mainsize;
-            size_left -= mainsize;
+            buf_pos += (sectors << 9);
+            size_left -= (sectors << 9);
         }
 
         // read trailing unaligned size left bytes
@@ -165,19 +172,105 @@ static int rockfuse_read(const char *path, char *buf, size_t size, off_t offset,
     } else
         size = 0;
 
+    pthread_mutex_unlock(&usb_mutex);
+
+    return size;
+}
+
+static int rockfuse_write(const char *path, const char *buf, size_t size, off_t offset,
+              struct fuse_file_info *fi) {
+    size_t maxlen;
+    (void) fi;
+    vfile_entry_t* vfile = get_vfile_entry_by_path(path);
+
+    if (vfile == NULL) {
+        return -ENOENT;
+    }
+
+    maxlen = vfile->sector_count * 0x200;
+
+    pthread_mutex_lock(&usb_mutex);
+
+    if (offset < maxlen) {
+        if (offset + size > maxlen)
+            size = maxlen - offset;
+
+        size_t size_left = size;
+        uint32_t buf_pos = 0;
+
+        // check for initial unaligned offset
+        if (offset % 0x200 != 0) {
+            if (rockusb_read_lba(
+                vfile->sector_start + (offset >> 9), 1, workbuf
+            ) != 0) {
+                return 0;
+            }
+
+            uint32_t fragsize = 0x200 - (offset % 0x200);
+            if (fragsize > size) {
+                fragsize = size;
+            }
+
+            memcpy(workbuf + (offset % 0x200), buf, fragsize);
+
+            if (rockusb_write_lba(
+                vfile->sector_start + (offset >> 9), 1, workbuf
+            ) != 0) {
+                return 0;
+            }
+
+            buf_pos += fragsize;
+            size_left -= fragsize;
+        }
+
+        // write aligned main body (sector-multiples)
+        if (size_left >= 0x200) {
+            if (rockusb_write_lba(
+                vfile->sector_start + ((offset + buf_pos) >> 9),
+                size_left >> 9, (uint8_t*)buf + buf_pos
+            ) != 0) {
+                return 0;
+            }
+
+            uint32_t mainsize = (size_left >> 9) << 9;
+
+            buf_pos += mainsize;
+            size_left -= mainsize;
+        }
+
+        // write trailing unaligned size left bytes
+        if (size_left > 0) {
+            if (rockusb_read_lba(
+                vfile->sector_start + ((offset + buf_pos) >> 9), 1, workbuf
+            ) != 0) {
+                return 0;
+            }
+
+            memcpy(workbuf, buf + buf_pos, size_left);
+            if (rockusb_write_lba(
+                vfile->sector_start + ((offset + buf_pos) >> 9), 1, workbuf
+            ) != 0) {
+                return 0;
+            }
+        }
+    } else
+        size = 0;
+
+    pthread_mutex_unlock(&usb_mutex);
+
     return size;
 }
 
 int rockfuse_init() {
     if (rockusb_init() != 0) {
-        printf("rockusb_init failed\n");
+        fprintf(stderr, "%s: rockusb_init failed\n", __FUNCTION__);
         return -1;
     }
 
     uint8_t id[5];
 
     if (rockusb_read_flash_id(id) != 0) {
-        printf("rockusb_read_flash_id failed\n");
+        fprintf(stderr, "%s: rockusb_read_flash_id failed\n", __FUNCTION__);
         return -1;
     }
 
@@ -192,7 +285,7 @@ int rockfuse_init() {
     memset(&flash_info, 0xaa, sizeof(flash_info_t));
 
     if (rockusb_read_flash_info(&flash_info) != 0) {
-        printf("rockusb_read_flash_info failed\n");
+        fprintf(stderr, "%s: rockusb_read_flash_info failed\n", __FUNCTION__);
         return -1;
     }
 
@@ -201,11 +294,19 @@ int rockfuse_init() {
                     flash_info.flash_size - ROOT_START_SECTOR;
 
 #ifdef VERBOSE
-    printf("flash size: %08x\n", flash_info.flash_size);
-    printf("page size : %08x\n", flash_info.page_size);
-    printf("block size: %04x\n", flash_info.block_size);
-    printf("mfg code  : %02x\n", flash_info.mfg_code);
+    printf("flash info:\n");
+    printf("  flash size: %08x\n", flash_info.flash_size);
+    printf("  page size : %08x\n", flash_info.page_size);
+    printf("  block size: %04x\n", flash_info.block_size);
+    printf("  mfg code  : %02x\n", flash_info.mfg_code);
+    printf("\n");
 #endif
+
+    // create mutex for parallel USB I/O operations
+    if (pthread_mutex_init(&usb_mutex, NULL) != 0) {
+        fprintf(stderr, "%s: error creating mutex\n", __FUNCTION__);
+        return -1;
+    }
 
     return 0;
 }
@@ -213,8 +314,9 @@ int rockfuse_init() {
 static struct fuse_operations rockfuse_oper = {
     .getattr    = rockfuse_getattr,
     .readdir    = rockfuse_readdir,
-    .open        = rockfuse_open,
-    .read        = rockfuse_read,
+    .open       = rockfuse_open,
+    .read       = rockfuse_read,
+    .write      = rockfuse_write
 };
 
 int rockfuse_main(int argc, char *argv[]) {
