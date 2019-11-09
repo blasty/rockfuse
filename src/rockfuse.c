@@ -145,17 +145,18 @@ static int rockfuse_read(const char *path, char *buf, size_t size, off_t offset,
 
         // read main body (sector-multiples)
         while (size_left >= 0x200) {
-            uint32_t sectors = ((size_left >> 9) > MAX_SECTORS) ? MAX_SECTORS : (size_left >> 9);
+            uint32_t num_sectors =
+                ((size_left >> 9) > MAX_SECTORS) ? MAX_SECTORS : (size_left >> 9);
 
             if (rockusb_read_lba(
                 vfile->sector_start + ((offset + buf_pos) >> 9),
-                sectors, (uint8_t*)buf + buf_pos
+                num_sectors, (uint8_t*)buf + buf_pos
             ) != 0) {
                 return 0;
             }
 
-            buf_pos += (sectors << 9);
-            size_left -= (sectors << 9);
+            buf_pos += (num_sectors << 9);
+            size_left -= (num_sectors << 9);
         }
 
         // read trailing unaligned size left bytes
@@ -224,18 +225,19 @@ static int rockfuse_write(const char *path, const char *buf, size_t size, off_t 
         }
 
         // write aligned main body (sector-multiples)
-        if (size_left >= 0x200) {
+        while (size_left >= 0x200) {
+            uint32_t num_sectors =
+                ((size_left >> 9) > MAX_SECTORS) ? MAX_SECTORS : (size_left >> 9);
+
             if (rockusb_write_lba(
                 vfile->sector_start + ((offset + buf_pos) >> 9),
-                size_left >> 9, (uint8_t*)buf + buf_pos
+                num_sectors, (uint8_t*)buf + buf_pos
             ) != 0) {
                 return 0;
             }
 
-            uint32_t mainsize = (size_left >> 9) << 9;
-
-            buf_pos += mainsize;
-            size_left -= mainsize;
+            buf_pos += num_sectors;
+            size_left -= num_sectors;
         }
 
         // write trailing unaligned size left bytes
