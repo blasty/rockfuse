@@ -104,8 +104,10 @@ static int rockfuse_open(const char *path, struct fuse_file_info *fi) {
 
 uint8_t workbuf[0x200];
 
-static int rockfuse_read(const char *path, char *buf, size_t size, off_t offset,
-              struct fuse_file_info *fi) {
+static int rockfuse_read(
+    const char *path, char *buf, size_t size, off_t offset,
+    struct fuse_file_info *fi
+) {
     size_t maxlen;
     (void) fi;
     vfile_entry_t* vfile = get_vfile_entry_by_path(path);
@@ -178,8 +180,10 @@ static int rockfuse_read(const char *path, char *buf, size_t size, off_t offset,
     return size;
 }
 
-static int rockfuse_write(const char *path, const char *buf, size_t size, off_t offset,
-              struct fuse_file_info *fi) {
+static int rockfuse_write(
+    const char *path, const char *buf, size_t size, off_t offset,
+    struct fuse_file_info *fi
+) {
     size_t maxlen;
     (void) fi;
     vfile_entry_t* vfile = get_vfile_entry_by_path(path);
@@ -236,8 +240,8 @@ static int rockfuse_write(const char *path, const char *buf, size_t size, off_t 
                 return 0;
             }
 
-            buf_pos += num_sectors;
-            size_left -= num_sectors;
+            buf_pos += (num_sectors << 9);
+            size_left -= (num_sectors << 9);
         }
 
         // write trailing unaligned size left bytes
