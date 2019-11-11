@@ -192,8 +192,6 @@ int rockusb_read_lba(uint32_t offset, uint32_t count, uint8_t *buf) {
     usbms_cbw_t cbw;
     usbms_csw_t csw;
 
-    printf("%s: offset=%08x, count=%08x, buf=%p\n", __FUNCTION__, offset, count, buf);
-
     cbw_build(&cbw, CBW_READ_LBA);
     cbw.flags = DIRECTION_IN;
     cbw.length = 0x0a;
