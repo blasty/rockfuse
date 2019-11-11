@@ -4,6 +4,7 @@
 #include <libusb.h>
 
 #include "rockusb.h"
+#include "util.h"
 
 // hardcoded for RK3399
 #define ROCKCHIP_VID 0x2207
@@ -191,6 +192,8 @@ int rockusb_read_lba(uint32_t offset, uint32_t count, uint8_t *buf) {
     usbms_cbw_t cbw;
     usbms_csw_t csw;
 
+    printf("%s: offset=%08x, count=%08x, buf=%p\n", __FUNCTION__, offset, count, buf);
+
     cbw_build(&cbw, CBW_READ_LBA);
     cbw.flags = DIRECTION_IN;
     cbw.length = 0x0a;
@@ -231,6 +234,8 @@ int rockusb_write_lba(uint32_t offset, uint32_t count, uint8_t *buf) {
     usbms_csw_t csw;
 
     cbw_build(&cbw, CBW_WRITE_LBA);
+    cbw.flags = DIRECTION_OUT;
+    cbw.length = 0x0a;
     cbw.transfer_length = count * 0x200;
     cbw.command.address = __builtin_bswap32(offset);
     cbw.command.length = __builtin_bswap16(count);
